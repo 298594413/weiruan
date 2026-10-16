@@ -1,6 +1,9 @@
 import { URLs } from '../../../constants/urls'
 import type { BasePromotion } from '../../../interface/DashboardData'
+import type { HttpRequestConfig } from '../../../util/Http'
 import { BaseActivity } from '../BaseActivity'
+
+const FALLBACK_REPORT_URL = 'https://cn.bing.com/msrewards/api/v1/reportactivity'
 
 export class UrlReward extends BaseActivity {
     public async doUrlReward(promotion: BasePromotion) {
@@ -22,10 +25,12 @@ export class UrlReward extends BaseActivity {
 
         const live = await this.bot.browser.func.ensureOffer(offerId)
         if (!live) {
+            // 降级路径：页面快照中不存在该 offer 时，回退到 v3 的直连 API 上报
+            if (await this.fallbackDirectReport(promotion)) return
             this.bot.logger.warn(
                 this.bot.isMobile,
                 'URL-REWARD',
-                `跳过 ${offerId}：页面快照中不存在，即使重新获取 /earn 和 /dashboard 后也没有`
+                `跳过 ${offerId}：页面快照中不存在（直连上报亦未成功），即使重新获取 /earn 和 /dashboard 后也没有`
             )
             return
         }
@@ -146,5 +151,111 @@ export class UrlReward extends BaseActivity {
         )
         await this.runUrlReward(promotion, false)
         return true
+    }
+
+    /**
+     * 降级直连上报（v3 UrlRewardNew 移植）：
+     * 页面快照（React 树）中找不到 offer 时，用 dashboard 数据里的
+     * offerId/hash/activityType 直接 POST cn.bing.com/msrewards/api/v1/reportactivity，
+     * 无需浏览器内部 action。Channel/PartnerId/UserId 在 v4 无 flyout 面板数据，
+     * 传空串（该接口以 OfferId+AuthKey 为主校验）。
+     */
+    private async fallbackDirectReport(promotion: BasePromotion): Promise<boolean> {
+        const offerId = promotion.offerId
+        const hash = promotion.hash
+
+        if (!hash) {
+            this.bot.logger.warn(
+                this.bot.isMobile,
+                'URL-REWARD',
+                `直连上报跳过 ${offerId}：dashboard 数据中无 hash`
+            )
+            return false
+        }
+
+        const dashboardActivityType = Number(promotion.activityType)
+        const activityType =
+            Number.isInteger(dashboardActivityType) && dashboardActivityType > 0 ? dashboardActivityType : 11
+
+        this.bot.logger.info(
+            this.bot.isMobile,
+            'URL-REWARD',
+            `页面快照缺失，降级直连上报 | offerId=${offerId} | type=${activityType} | currentBalance=${this.bot.userData.currentPoints}`
+        )
+
+        try {
+            const cookieHeader = this.bot.browser.func.buildCookieHeader(
+                this.bot.isMobile ? this.bot.cookies.mobile : this.bot.cookies.desktop,
+                ['bing.com', 'live.com', 'microsoftonline.com']
+            )
+
+            const fingerprintHeaders = { ...this.bot.fingerprint.headers }
+            delete fingerprintHeaders['Cookie']
+            delete fingerprintHeaders['cookie']
+
+            const oldBalance = this.bot.userData.currentPoints
+
+            const request: HttpRequestConfig = {
+                url: FALLBACK_REPORT_URL,
+                method: 'POST',
+                headers: {
+                    Accept: '*/*',
+                    'Content-Type': 'text/plain;charset=UTF-8',
+                    Origin: 'https://www.bing.com',
+                    Referer: 'https://www.bing.com/',
+                    ...fingerprintHeaders,
+                    Cookie: cookieHeader
+                },
+                data: {
+                    ActivityCount: 1,
+                    ActivityType: activityType,
+                    ActivitySubType: '',
+                    OfferId: offerId,
+                    AuthKey: hash,
+                    Channel: '',
+                    PartnerId: '',
+                    UserId: ''
+                },
+                retries: 1
+            }
+
+            const response = await this.bot.http.request<{ message?: string; status?: boolean }>(request, false)
+
+            const newBalance = await this.bot.browser.func.getCurrentPoints()
+            const gainedPoints = newBalance - oldBalance
+
+            this.bot.logger.debug(
+                this.bot.isMobile,
+                'URL-REWARD',
+                `直连上报响应 | offerId=${offerId} | status=${response.status} | body=${JSON.stringify(response.data)} | pointsGained=${gainedPoints} | currentBalance=${newBalance}`
+            )
+
+            if (gainedPoints > 0) {
+                this.bot.userData.currentPoints = newBalance
+                this.bot.userData.gainedPoints = (this.bot.userData.gainedPoints ?? 0) + gainedPoints
+
+                this.bot.logger.info(
+                    this.bot.isMobile,
+                    'URL-REWARD',
+                    `直连上报完成 | offerId=${offerId} | pointsGained=${gainedPoints} | currentBalance=${newBalance}`,
+                    'green'
+                )
+                return true
+            }
+
+            this.bot.logger.warn(
+                this.bot.isMobile,
+                'URL-REWARD',
+                `直连上报未获得积分 | offerId=${offerId} | http=${response.status} | body=${JSON.stringify(response.data)} | pointsGained=0 | currentBalance=${newBalance}`
+            )
+            return false
+        } catch (error) {
+            this.bot.logger.error(
+                this.bot.isMobile,
+                'URL-REWARD',
+                `直连上报出错 | offerId=${offerId} | message=${error instanceof Error ? error.message : String(error)}`
+            )
+            return false
+        }
     }
 }
