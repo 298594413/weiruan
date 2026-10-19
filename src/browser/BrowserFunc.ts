@@ -1024,6 +1024,26 @@ export default class BrowserFunc {
                     'EARN-SNAPSHOT',
                     '渲染抓取 /dashboard 完成 | flight 数据含每日任务板块'
                 )
+                // [每日任务修复] dump dailyset 板块 DOM 结构，定位可点击元素
+                try {
+                    const sectionHtml = await page.evaluate(() => {
+                        const sec = document.querySelector('#dailyset, section[id*="dailyset" i], [id*="dailyset" i]')
+                        if (!sec) return '<DAILYSET-NOT-FOUND>'
+                        const el = sec.closest('section') || sec
+                        return el.outerHTML.slice(0, 3000)
+                    })
+                    this.bot.logger.info(
+                        this.bot.isMobile,
+                        'EARN-SNAPSHOT',
+                        `DAILYSET-DOM | ${sectionHtml.replace(/\s+/g, ' ').slice(0, 3000)}`
+                    )
+                } catch (dumpError) {
+                    this.bot.logger.warn(
+                        this.bot.isMobile,
+                        'EARN-SNAPSHOT',
+                        `DAILYSET-DOM dump 失败 | ${dumpError instanceof Error ? dumpError.message : String(dumpError)}`
+                    )
+                }
             }
             return html
         } catch (error) {
