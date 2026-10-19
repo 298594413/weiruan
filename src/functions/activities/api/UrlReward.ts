@@ -192,29 +192,34 @@ export class UrlReward extends BaseActivity {
         try {
             const oldBalance = this.bot.userData.currentPoints
 
-            const { status, acknowledged, availablePoints } = await this.bot.browser.func.reportServerAction(
-                actionId,
-                [
-                    hash,
-                    activityType,
+            const { status, acknowledged, availablePoints, responseBody } =
+                await this.bot.browser.func.reportServerAction(
+                    actionId,
+                    [
+                        hash,
+                        activityType,
+                        {
+                            offerid: offerId,
+                            isPromotional: '$undefined',
+                            timezoneOffset: this.bot.userData.timezoneOffset
+                        }
+                    ],
                     {
-                        offerid: offerId,
-                        isPromotional: '$undefined',
-                        timezoneOffset: this.bot.userData.timezoneOffset
+                        url: URLs.rewards.dashboard,
+                        referer: URLs.rewards.dashboard,
+                        routerStateTree: this.bot.browser.react.routerStateTree('dashboard')
                     }
-                ],
-                {
-                    url: URLs.rewards.dashboard,
-                    referer: URLs.rewards.dashboard,
-                    routerStateTree: this.bot.browser.react.routerStateTree('dashboard')
-                }
-            )
+                )
 
             if (!acknowledged) {
+                const raw =
+                    typeof responseBody === 'string'
+                        ? responseBody.slice(0, 800)
+                        : JSON.stringify(responseBody ?? '').slice(0, 800)
                 this.bot.logger.warn(
                     this.bot.isMobile,
                     'URL-REWARD',
-                    `直连上报请求未被确认 | offerId=${offerId} | status=${status}`
+                    `直连上报请求未被确认 | offerId=${offerId} | status=${status} | body=${raw}`
                 )
                 return false
             }

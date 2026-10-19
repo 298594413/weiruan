@@ -938,7 +938,7 @@ export default class BrowserFunc {
         actionId: string,
         body: unknown[],
         opts?: { url?: string; referer?: string; routerStateTree?: string }
-    ): Promise<{ status: number; acknowledged: boolean; availablePoints: number | null }> {
+    ): Promise<{ status: number; acknowledged: boolean; availablePoints: number | null; responseBody: unknown }> {
         const url = opts?.url ?? URLs.rewards.earn
         const referer = opts?.referer ?? url
         const routerStateTree = opts?.routerStateTree ?? this.bot.nextRouterStateTree
@@ -972,7 +972,8 @@ export default class BrowserFunc {
         return {
             status: response.status,
             acknowledged: this.bot.utils.serverActionAcknowledged(response.data),
-            availablePoints: this.bot.browser.react.availablePointsFromPayload(response.data)
+            availablePoints: this.bot.browser.react.availablePointsFromPayload(response.data),
+            responseBody: response.data
         }
     }
 
