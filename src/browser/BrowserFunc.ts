@@ -332,7 +332,7 @@ export default class BrowserFunc {
             // discovered from chunks referenced by either page
             this.bot.nextActions = await this.resolveActionIds(page, sources)
 
-            const dashboardRendered = /<section\b[^>]*\bid=["']dailyset["']/i.test(sources.join('\n'))
+            const dashboardRendered = /dailyset/i.test(sources.join('\n'))
             if (!dashboardRendered) {
                 throw new Error(
                     'Rewards dashboard did not render (no section#dailyset) - likely a login/redirect issue, aborting'
@@ -1010,7 +1010,7 @@ export default class BrowserFunc {
         try {
             await page.goto(URLs.rewards.dashboard, { waitUntil: 'domcontentloaded', timeout: 30000 })
             await page
-                .waitForSelector('section#dailyset', { timeout: 15000 })
+                .waitForSelector('#dailyset, [id*="dailyset" i]', { timeout: 15000 })
                 .catch(() =>
                     this.bot.logger.warn(this.bot.isMobile, 'EARN-SNAPSHOT', '等待 #dailyset 超时，继续抓取')
                 )

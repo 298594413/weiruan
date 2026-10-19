@@ -1,9 +1,6 @@
 import { URLs } from '../../../constants/urls'
 import type { BasePromotion } from '../../../interface/DashboardData'
-import type { HttpRequestConfig } from '../../../util/Http'
 import { BaseActivity } from '../BaseActivity'
-
-const FALLBACK_REPORT_URL = 'https://cn.bing.com/msrewards/api/v1/reportactivity'
 
 export class UrlReward extends BaseActivity {
     public async doUrlReward(promotion: BasePromotion) {
@@ -154,11 +151,10 @@ export class UrlReward extends BaseActivity {
     }
 
     /**
-     * 降级直连上报（v3 UrlRewardNew 移植）：
-     * 页面快照（React 树）中找不到 offer 时，用 dashboard 数据里的
-     * offerId/hash/activityType 直接 POST cn.bing.com/msrewards/api/v1/reportactivity，
-     * 无需浏览器内部 action。Channel/PartnerId/UserId 在 v4 无 flyout 面板数据，
-     * 传空串（该接口以 OfferId+AuthKey 为主校验）。
+     * 降级上报（dashboard 数据直连，v4 通道）：
+     * 页面快照（React 树）中找不到 offer 时，用 dashboard API 数据里的
+     * offerId/hash/activityType 直接走正常 server-action 上报，不依赖页面快照。
+     * （原 cn.bing.com/msrewards/api/v1/reportactivity 老接口在 geo=CN 下返回 503，已废弃）
      */
     private async fallbackDirectReport(promotion: BasePromotion): Promise<boolean> {
         const offerId = promotion.offerId
@@ -173,6 +169,16 @@ export class UrlReward extends BaseActivity {
             return false
         }
 
+        const actionId = this.bot.nextActions.reportActivity
+        if (!actionId) {
+            this.bot.logger.warn(
+                this.bot.isMobile,
+                'URL-REWARD',
+                `直连上报跳过 ${offerId}：bundle 中未发现 "reportActivity"`
+            )
+            return false
+        }
+
         const dashboardActivityType = Number(promotion.activityType)
         const activityType =
             Number.isInteger(dashboardActivityType) && dashboardActivityType > 0 ? dashboardActivityType : 11
@@ -180,54 +186,46 @@ export class UrlReward extends BaseActivity {
         this.bot.logger.info(
             this.bot.isMobile,
             'URL-REWARD',
-            `页面快照缺失，降级直连上报 | offerId=${offerId} | type=${activityType} | currentBalance=${this.bot.userData.currentPoints}`
+            `页面快照缺失，使用 dashboard 数据经 server-action 上报 | offerId=${offerId} | type=${activityType} | currentBalance=${this.bot.userData.currentPoints}`
         )
 
         try {
-            const cookieHeader = this.bot.browser.func.buildCookieHeader(
-                this.bot.isMobile ? this.bot.cookies.mobile : this.bot.cookies.desktop,
-                ['bing.com', 'live.com', 'microsoftonline.com']
-            )
-
-            const fingerprintHeaders = { ...this.bot.fingerprint.headers }
-            delete fingerprintHeaders['Cookie']
-            delete fingerprintHeaders['cookie']
-
             const oldBalance = this.bot.userData.currentPoints
 
-            const request: HttpRequestConfig = {
-                url: FALLBACK_REPORT_URL,
-                method: 'POST',
-                headers: {
-                    Accept: '*/*',
-                    'Content-Type': 'text/plain;charset=UTF-8',
-                    Origin: 'https://www.bing.com',
-                    Referer: 'https://www.bing.com/',
-                    ...fingerprintHeaders,
-                    Cookie: cookieHeader
-                },
-                data: {
-                    ActivityCount: 1,
-                    ActivityType: activityType,
-                    ActivitySubType: '',
-                    OfferId: offerId,
-                    AuthKey: hash,
-                    Channel: '',
-                    PartnerId: '',
-                    UserId: ''
-                },
-                retries: 1
+            const { status, acknowledged, availablePoints } = await this.bot.browser.func.reportServerAction(
+                actionId,
+                [
+                    hash,
+                    activityType,
+                    {
+                        offerid: offerId,
+                        isPromotional: '$undefined',
+                        timezoneOffset: this.bot.userData.timezoneOffset
+                    }
+                ],
+                {
+                    url: URLs.rewards.dashboard,
+                    referer: URLs.rewards.dashboard,
+                    routerStateTree: this.bot.browser.react.routerStateTree('dashboard')
+                }
+            )
+
+            if (!acknowledged) {
+                this.bot.logger.warn(
+                    this.bot.isMobile,
+                    'URL-REWARD',
+                    `直连上报请求未被确认 | offerId=${offerId} | status=${status}`
+                )
+                return false
             }
 
-            const response = await this.bot.http.request<{ message?: string; status?: boolean }>(request, false)
-
-            const newBalance = await this.bot.browser.func.getCurrentPoints()
+            const newBalance = availablePoints ?? (await this.bot.browser.func.getCurrentPoints())
             const gainedPoints = newBalance - oldBalance
 
             this.bot.logger.debug(
                 this.bot.isMobile,
                 'URL-REWARD',
-                `直连上报响应 | offerId=${offerId} | status=${response.status} | body=${JSON.stringify(response.data)} | pointsGained=${gainedPoints} | currentBalance=${newBalance}`
+                `直连上报响应 | offerId=${offerId} | status=${status} | acknowledged=${acknowledged} | pointsGained=${gainedPoints} | currentBalance=${newBalance}`
             )
 
             if (gainedPoints > 0) {
@@ -246,7 +244,7 @@ export class UrlReward extends BaseActivity {
             this.bot.logger.warn(
                 this.bot.isMobile,
                 'URL-REWARD',
-                `直连上报未获得积分 | offerId=${offerId} | http=${response.status} | body=${JSON.stringify(response.data)} | pointsGained=0 | currentBalance=${newBalance}`
+                `直连上报未获得积分 | offerId=${offerId} | acknowledged=${acknowledged} | pointsGained=0 | currentBalance=${newBalance}`
             )
             return false
         } catch (error) {
