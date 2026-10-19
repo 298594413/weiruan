@@ -317,8 +317,11 @@ export default class BrowserFunc {
 
             this.bot.nextRouterStateTree = this.bot.browser.react.routerStateTree('earn')
 
-            // pull /dashboard HTML to capture chunks that /earn doesn't show
-            const dashboardHtml = await this.fetchBootstrapHtml(page, URLs.rewards.dashboard, '/dashboard')
+            // pull /dashboard rendered DOM to capture chunks that /earn doesn't show
+            // (dailySet 每日任务为客户端懒加载板块，HTTP/SSR 抓取不到其 RSC 数据，必须用渲染后 DOM)
+            const dashboardHtml =
+                (await this.captureRenderedDashboardHtml(page, '/dashboard')) ??
+                (await this.fetchBootstrapHtml(page, URLs.rewards.dashboard, '/dashboard'))
 
             const sources = [earnRaw, earnDom, dashboardHtml].filter(Boolean)
             const snapshot = this.bot.browser.react.snapshotPage(sources)
@@ -979,6 +982,13 @@ export default class BrowserFunc {
 
         const fetchSnapshotPage = async (url: string, route: string): Promise<string | null> => {
             if (!usePage) return await this.fetchRewardsHtml(url, route)
+            // dailySet 每日任务为客户端懒加载板块：HTTP 抓取(SSR)不含其 RSC 数据，必须用渲染后的 DOM
+            if (route === '/dashboard') {
+                return (
+                    (await this.captureRenderedDashboardHtml(page, route)) ??
+                    (await this.getRewardsPageHtml(url, route))
+                )
+            }
             return await this.getRewardsPageHtml(url, route)
         }
 
@@ -989,6 +999,40 @@ export default class BrowserFunc {
         const availablePages = pages.filter((html): html is string => html !== null)
 
         return availablePages.length ? this.bot.browser.react.snapshotPage(availablePages) : null
+    }
+
+    /**
+     * 渲染抓取 /dashboard：dailySet(每日任务)为客户端懒加载板块，
+     * HTTP/SSR 快照拿不到其 RSC flight 数据（会导致 ensureOffer 找不到、降级直连 503）。
+     * 导航页面 → 等待 #dailyset 渲染 → 额外等待 RSC 流完成 → 取完整 DOM。
+     */
+    private async captureRenderedDashboardHtml(page: Page, route: string): Promise<string | null> {
+        try {
+            await page.goto(URLs.rewards.dashboard, { waitUntil: 'domcontentloaded', timeout: 30000 })
+            await page
+                .waitForSelector('section#dailyset', { timeout: 15000 })
+                .catch(() =>
+                    this.bot.logger.warn(this.bot.isMobile, 'EARN-SNAPSHOT', '等待 #dailyset 超时，继续抓取')
+                )
+            // RSC 流为异步注入，额外等待确保 flight chunk 已进入 DOM
+            await this.bot.utils.wait(2500)
+            const html = await page.content()
+            if (html && /dailySetPromotions|dailyset/i.test(html)) {
+                this.bot.logger.info(
+                    this.bot.isMobile,
+                    'EARN-SNAPSHOT',
+                    '渲染抓取 /dashboard 完成 | flight 数据含每日任务板块'
+                )
+            }
+            return html
+        } catch (error) {
+            this.bot.logger.warn(
+                this.bot.isMobile,
+                'EARN-SNAPSHOT',
+                `渲染抓取 /dashboard 失败 | ${error instanceof Error ? error.message : String(error)}`
+            )
+            return null
+        }
     }
 
     private async fetchRewardsHtml(url: string, route: string): Promise<string | null> {

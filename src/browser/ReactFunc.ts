@@ -83,6 +83,15 @@ export default class ReactFunc {
     public snapshotPage(html: string | readonly string[]): PageSnapshot {
         const combined = this.concatFlightChunks(html)
 
+        // [每日任务修复] 校验 flight 数据是否包含 dailySet 板块（客户端懒加载，容易缺失）
+        if (!/dailySetPromotions|"dailyset"|DailySet/i.test(combined)) {
+            this.bot.logger.warn(
+                this.bot.isMobile,
+                'REACT-PARSE',
+                '快照 flight 数据中未发现每日任务(dailySet)板块 - 页面可能未渲染完整，每日任务将无法上报'
+            )
+        }
+
         const offers = this.parseOffers(combined)
         const streaks = this.parseStreaks(combined)
         const streakProtection = this.parseStreakProtection(combined)
